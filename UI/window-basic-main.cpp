@@ -1594,7 +1594,9 @@ void OBSBasic::OBSInit()
 	ui->lockUI->setChecked(docksLocked);
 	ui->lockUI->blockSignals(false);
 
+#ifndef __APPLE__
 	SystemTray(true);
+#endif
 
 	if (windowState().testFlag(Qt::WindowFullScreen))
 		fullscreenInterface = true;
@@ -1719,6 +1721,10 @@ void OBSBasic::DeferredLoad(const QString &file, int requeueCount)
 	Load(QT_TO_UTF8(file));
 	RefreshSceneCollections();
 	OnFirstLoad();
+
+	/* Minimizng to tray on initial startup does not work on mac
+	 * unless it is done in the deferred load */
+	SystemTray(true);
 }
 
 /* shows a "what's new" page on startup of new versions using CEF */
@@ -5589,6 +5595,9 @@ static void SetItemTL(obs_sceneitem_t *item, const vec3 &tl)
 static bool RotateSelectedSources(obs_scene_t *scene, obs_sceneitem_t *item,
 		void *param)
 {
+	if (obs_sceneitem_is_group(item))
+		obs_sceneitem_group_enum_items(item, RotateSelectedSources,
+				param);
 	if (!obs_sceneitem_selected(item))
 		return true;
 
@@ -5601,10 +5610,11 @@ static bool RotateSelectedSources(obs_scene_t *scene, obs_sceneitem_t *item,
 	else if (rot <= -360.0f) rot += 360.0f;
 	obs_sceneitem_set_rot(item, rot);
 
+	obs_sceneitem_force_update_transform(item);
+
 	SetItemTL(item, tl);
 
 	UNUSED_PARAMETER(scene);
-	UNUSED_PARAMETER(param);
 	return true;
 };
 
@@ -5631,6 +5641,9 @@ static bool MultiplySelectedItemScale(obs_scene_t *scene, obs_sceneitem_t *item,
 {
 	vec2 &mul = *reinterpret_cast<vec2*>(param);
 
+	if (obs_sceneitem_is_group(item))
+		obs_sceneitem_group_enum_items(item, MultiplySelectedItemScale,
+				param);
 	if (!obs_sceneitem_selected(item))
 		return true;
 
@@ -5640,6 +5653,8 @@ static bool MultiplySelectedItemScale(obs_scene_t *scene, obs_sceneitem_t *item,
 	obs_sceneitem_get_scale(item, &scale);
 	vec2_mul(&scale, &scale, &mul);
 	obs_sceneitem_set_scale(item, &scale);
+
+	obs_sceneitem_force_update_transform(item);
 
 	SetItemTL(item, tl);
 
@@ -5668,6 +5683,9 @@ static bool CenterAlignSelectedItems(obs_scene_t *scene, obs_sceneitem_t *item,
 {
 	obs_bounds_type boundsType = *reinterpret_cast<obs_bounds_type*>(param);
 
+	if (obs_sceneitem_is_group(item))
+		obs_sceneitem_group_enum_items(item, CenterAlignSelectedItems,
+				param);
 	if (!obs_sceneitem_selected(item))
 		return true;
 
@@ -5705,39 +5723,38 @@ void OBSBasic::on_actionStretchToScreen_triggered()
 			&boundsType);
 }
 
+static bool center_to_scene(obs_scene_t *, obs_sceneitem_t *item, void *)
+{
+	vec3 tl, br, itemCenter, screenCenter, offset;
+	obs_video_info ovi;
+
+	if (obs_sceneitem_is_group(item))
+		obs_sceneitem_group_enum_items(item, center_to_scene, nullptr);
+	if (!obs_sceneitem_selected(item))
+		return true;
+
+	obs_get_video_info(&ovi);
+
+	vec3_set(&screenCenter, float(ovi.base_width),
+			float(ovi.base_height), 0.0f);
+	vec3_mulf(&screenCenter, &screenCenter, 0.5f);
+
+	GetItemBox(item, tl, br);
+
+	vec3_sub(&itemCenter, &br, &tl);
+	vec3_mulf(&itemCenter, &itemCenter, 0.5f);
+	vec3_add(&itemCenter, &itemCenter, &tl);
+
+	vec3_sub(&offset, &screenCenter, &itemCenter);
+	vec3_add(&tl, &tl, &offset);
+
+	SetItemTL(item, tl);
+	return true;
+};
+
 void OBSBasic::on_actionCenterToScreen_triggered()
 {
-	auto func = [] (obs_scene_t *scene, obs_sceneitem_t *item, void *param)
-	{
-		vec3 tl, br, itemCenter, screenCenter, offset;
-		obs_video_info ovi;
-
-		if (!obs_sceneitem_selected(item))
-			return true;
-
-		obs_get_video_info(&ovi);
-
-		vec3_set(&screenCenter, float(ovi.base_width),
-				float(ovi.base_height), 0.0f);
-		vec3_mulf(&screenCenter, &screenCenter, 0.5f);
-
-		GetItemBox(item, tl, br);
-
-		vec3_sub(&itemCenter, &br, &tl);
-		vec3_mulf(&itemCenter, &itemCenter, 0.5f);
-		vec3_add(&itemCenter, &itemCenter, &tl);
-
-		vec3_sub(&offset, &screenCenter, &itemCenter);
-		vec3_add(&tl, &tl, &offset);
-
-		SetItemTL(item, tl);
-
-		UNUSED_PARAMETER(scene);
-		UNUSED_PARAMETER(param);
-		return true;
-	};
-
-	obs_scene_enum_items(GetCurrentScene(), func, nullptr);
+	obs_scene_enum_items(GetCurrentScene(), center_to_scene, nullptr);
 }
 
 void OBSBasic::EnablePreviewDisplay(bool enable)
@@ -6193,6 +6210,10 @@ void OBSBasic::SetShowing(bool showing)
 
 		setVisible(false);
 
+#ifdef __APPLE__
+		EnableOSXDockIcon(false);
+#endif
+
 	} else if (showing && !isVisible()) {
 		if (showHide)
 			showHide->setText(QTStr("Basic.SystemTray.Hide"));
@@ -6202,6 +6223,14 @@ void OBSBasic::SetShowing(bool showing)
 			EnablePreviewDisplay(true);
 
 		setVisible(true);
+
+#ifdef __APPLE__
+		EnableOSXDockIcon(true);
+#endif
+
+		/* raise and activate window to ensure it is on top */
+		raise();
+		activateWindow();
 
 		/* show all child dialogs that was visible earlier */
 		if (!visDialogs.isEmpty()) {
@@ -6330,6 +6359,9 @@ void OBSBasic::SystemTray(bool firstStarted)
 			QTimer::singleShot(50, this, SLOT(hide()));
 			EnablePreviewDisplay(false);
 			setVisible(false);
+#ifdef __APPLE__
+			EnableOSXDockIcon(false);
+#endif
 			opt_minimize_tray = false;
 		}
 	} else if (sysTrayEnabled) {

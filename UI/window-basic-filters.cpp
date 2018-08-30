@@ -133,6 +133,7 @@ OBSBasicFilters::OBSBasicFilters(QWidget *parent, OBSSource source_)
 					addDrawCallback);
 	} else {
 		ui->rightLayout->setContentsMargins(0, noPreviewMargin, 0, 0);
+		ui->rightContainerLayout->insertStretch(1);
 		ui->preview->hide();
 	}
 }
@@ -185,15 +186,6 @@ void OBSBasicFilters::UpdatePropertiesView(int row, bool async)
 			"update_properties",
 			OBSBasicFilters::UpdateProperties,
 			this);
-
-	uint32_t caps = obs_source_get_output_flags(filter);
-	if ((caps & OBS_SOURCE_VIDEO)) {
-		ui->rightLayout->setContentsMargins(0, 0, 0, 0);
-		ui->preview->show();
-	} else {
-		ui->rightLayout->setContentsMargins(0, noPreviewMargin, 0, 0);
-		ui->preview->hide();
-	}
 
 	obs_data_release(settings);
 
